@@ -175,12 +175,20 @@ class GitHub(object):
         self.log.debug("git.io shortening: %s" % url)
         try:
             page = utils.http.request("https://git.io", method="POST",
-                post_data={"url": url})
-            return page.headers["Location"]
+                                      post_data={"url": url})
+            if "Location" in page.headers:
+                return page.headers["Location"]
+            else:
+                self.log.error("Missing 'Location' header in git.io response, returning original URL")
+                return url
         except utils.http.HTTPTimeoutException:
             self.log.warn(
                 "HTTPTimeoutException while waiting for github short URL", [])
             return url
+        except Exception as e:
+            self.log.error("An error occurred while shortening the URL: %s", str(e))
+            return url
+
 
     def _iso8601(self, s):
         return utils.datetime.parse.iso8601(s)
@@ -248,7 +256,7 @@ class GitHub(object):
 
         return outputs
 
-    def _comment(self, s):
+    def comment(self, s):
         s_line = s.split("\n")[0].strip()
         left, right = s_line[:COMMENT_MAX], s_line[COMMENT_MAX:]
         if not right:
@@ -386,27 +394,29 @@ class GitHub(object):
         url = self._short_url(data["issue"]["html_url"])
         return ["[issue] %s %s: %s - %s" %
             (author, action_str, issue_title, url)]
-    def issue_comment(self, full_name, data):
-        if "changes" in data:
-            # don't show this event when nothing has actually changed
-            if data["changes"]["body"]["from"] == data["comment"]["body"]:
-                return
 
-        number = utils.irc.color("#%s" % data["issue"]["number"], colors.COLOR_ID)
+    def issue_comment(self, full_name, data):
         action = data["action"]
+        number = utils.irc.color("#%s" % data["issue"]["number"], colors.COLOR_ID)
         issue_title = data["issue"]["title"]
         type = "PR" if "pull_request" in data["issue"] else "issue"
         title = data["issue"]["title"]
-        commenter = utils.irc.bold(data["sender"]["login"])
+        commenter = utils.irc.bold(data["comment"]["user"]["login"])
         url = self._short_url(data["comment"]["html_url"])
 
-        body = ""
-        if not action == "deleted":
-            body = ": %s" % self._comment(data["comment"]["body"])
+        if action == "created":
+            body = self.comment(data["comment"]["body"])
+            return [f"[{type}] {commenter} commented on {number} ({title}): {body} - {url}"]
 
-        return ["[%s] %s %s on %s (%s)%s - %s" %
-            (type, commenter, COMMENT_ACTIONS[action], number, title, body,
-            url)]
+        if action == "deleted":
+            return [f"[{type}] {commenter} deleted a comment on {number} ({title}) - {url}"]
+
+        if action == "edited":
+            body = self.comment(data["comment"]["body"])
+            return [f"[{type}] {commenter} edited a comment on {number} ({title}): {body} - {url}"]
+
+        return [f"[{type}] {commenter} performed action '{action}' on {number} ({title}) - {url}"]
+
 
     def create(self, full_name, data):
         ref = data["ref"]
